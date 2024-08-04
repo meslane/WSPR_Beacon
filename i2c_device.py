@@ -1,4 +1,5 @@
 import machine
+import math
 
 class I2C_Device:
     def __init__(self, i2c: machine.I2C, address: int, addrsize: int = 8):
@@ -47,7 +48,107 @@ class SI5351(I2C_Device):
         else:
             self.i2c_write(channel, (control_data | 0x80))
             self.i2c_write(0x03, (enable_data | (0x01 << clk_channel)))
+    
+    def configure_pll(self, pll: int, mult: int, num: int, denom: int):
+        '''
+        Configure PLL output multisynth
+        Adapted from: https://github.com/adafruit/Adafruit_Si5351_Library/blob/master/Adafruit_SI5351.cpp
+        
+        fVCO is the PLL output, and must be between 600..900MHz, where:
+
+        fVCO = fXTAL * (a+(b/c))
+
+        fXTAL = the crystal input frequency
+        a [mult]    = an integer between 15 and 90
+        b [num]     = the fractional numerator (0..1,048,575)
+        c [denom]   = the fractional denominator (1..1,048,575)
+        '''
+        #constrain to valid values
+        assert 15 <= mult <= 90
+        assert 0 < denom <= 0xFFFFF
+        assert num <= 0xFFFFF
+        
+        if num == 0: #integer
+            P1 = int(128 * mult - 512)
+            P2 = num
+            P3 = denom
+        else: #fractional
+            P1 = int(128 * mult + math.floor(128 * (num/denom)) - 512)
+            P2 = int(128 * num - denom * math.floor(128 * (num/denom)))
+            P3 = denom
+        
+        if pll == 0: #PLL A
+            base = 26
+        else: #PLL B
+            base = 34
+        
+        #write registers
+        self.i2c_write(base, (P3 >> 8) & 0xFF)
+        self.i2c_write(base + 1, P3 & 0xFF)
+        self.i2c_write(base + 2, (P1 & 0x00030000) >> 16)
+        self.i2c_write(base + 3, (P1 >> 8) & 0xFF)
+        self.i2c_write(base + 4, P1 & 0xFF)
+        self.i2c_write(base + 5, ((P3 & 0x000F0000) >> 12) | ((P2 & 0x000F0000) >> 16))
+        self.i2c_write(base + 6, (P2 >> 8) & 0xFF)
+        self.i2c_write(base + 7, P2 & 0xFF)
+    
+    def configure_output_multisynth(self, channel: int, div: int, num: int, denom: int):
+        '''
+        Configure channel output multisynth
+        Adapted from: https://github.com/adafruit/Adafruit_Si5351_Library/blob/master/Adafruit_SI5351.cpp
+
+        fOUT = fVCO / (a + (b/c))
+
+        a [div]   = The integer value, which must be 4, 6 or 8 in integer mode (MSx_INT=1)
+                    or 8..900 in fractional mode (MSx_INT=0).
+        b [num]   = The fractional numerator (0..1,048,575)
+        c [denom] = The fractional denominator (1..1,048,575)
+        '''
+        
+        assert 0 <= channel <= 2
+        assert 4 <= div <= 2048
+        assert 0 <= num <= 0xFFFFF
+        assert 0 <= denom <= 0xFFFFF
+    
+        if num == 0: #integer
+            P1 = int(128 * div - 512)
+            P2 = 0
+            P3 = denom
+        else: #fractional
+            P1 = int(128 * div + math.floor(128 * num / denom) - 512)
+            P2 = int(128 * num - denom * math.floor(128 * num / denom))
+            P3 = denom
             
+        if channel == 0:
+            base = 42
+        elif channel == 1:
+            base = 50
+        else:
+            base = 58
+        
+        #write registers
+        self.i2c_write(base, (P3 >> 8) & 0xFF)
+        self.i2c_write(base + 1, P3 & 0xFF)
+        self.i2c_write(base + 2, (P1 & 0x00030000) >> 16)
+        self.i2c_write(base + 3, (P1 >> 8) & 0xFF)
+        self.i2c_write(base + 4, P1 & 0xFF)
+        self.i2c_write(base + 5, ((P3 & 0x000F0000) >> 12) | ((P2 & 0x000F0000) >> 16))
+        self.i2c_write(base + 6, (P2 >> 8) & 0xFF)
+        self.i2c_write(base + 7, P2 & 0xFF)
+    
+    def configure_output_driver(self, channel: int, int_mode: int = 1, pll_source: int = 0,
+                                invert: int = 0, input_source: int = 0x03, drive: int = 0x03):
+        '''
+        Configure the output driver for the selected output channel
+        '''
+        assert 0 <= channel <= 2
+        channel_addr = channel + 16
+        
+        data = self.i2c_read(channel_addr) & 0x80 #keep enable bit
+        data |= (int_mode << 6) | (pll_source << 5) | (invert << 4) | (input_source << 2) | drive
+        
+        self.i2c_write(channel + 16, data)
+    
     def reset_plls(self):
         self.i2c_write(177, 0xA0)
         
@@ -78,4 +179,12 @@ class SI5351(I2C_Device):
                 
                 if address < 200: #writing above this bricks i2c
                     self.i2c_write(address, data)
-                
+                    
+    def calculate_frequency(self, pll_a, pll_b, pll_c, multi_a, multi_b, multi_c, f_vco = 25e6):
+        '''
+        Helper function to calculate frequency based on synth constants
+        '''
+        
+        f_pll = f_vco * (pll_a + (pll_b / pll_c))
+        f_out = f_pll / (multi_a + (multi_b/multi_c))
+        return f_out
