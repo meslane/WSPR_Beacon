@@ -165,7 +165,7 @@ class SI5351(I2C_Device):
             
         self.i2c_write(183, setting)
         
-    def load_register_map(self, filename):
+    def load_register_map(self, filename: str):
         '''
         Load a register map file generated from ClockBuilder
         '''
@@ -185,6 +185,25 @@ class SI5351(I2C_Device):
         Helper function to calculate frequency based on synth constants
         '''
         
-        f_pll = f_vco * (pll_a + (pll_b / pll_c))
-        f_out = f_pll / (multi_a + (multi_b/multi_c))
+        f_pll = float(f_vco * (pll_a + (pll_b / pll_c)))
+        f_out = float(f_pll / (multi_a + (multi_b/multi_c)))
         return f_out
+    
+    def transmit_wspr_tone(self, channel: int, band: str, offset: float):
+        '''
+        Transmit a WSPR tone in the given ham band with specified offset
+        Assumes channel is configured and set to use PLL A
+        
+        Args:
+            band: string denoting which ham band to transmit in
+            offset: frequency offset from start of band (in Hz)
+        '''  
+        
+        if band == "20m":
+            assert 0 <= offset <= 200
+            pll_a = 28
+            pll_b_base = 195370
+            
+        #set output divider to 50 since we control with VCO
+        self.configure_output_multisynth(channel, 50, 0, 1)    
+        self.configure_pll(0, pll_a, pll_b_base + int(2 * offset), 1000000)
