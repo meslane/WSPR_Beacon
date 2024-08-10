@@ -189,21 +189,35 @@ class SI5351(I2C_Device):
         f_out = float(f_pll / (multi_a + (multi_b/multi_c)))
         return f_out
     
-    def transmit_wspr_tone(self, channel: int, band: str, offset: float):
+    def transmit_wspr_tone(self, channel: int, band: str,
+                           offset: float, pll: int = 0, correction: int = 0):
         '''
         Transmit a WSPR tone in the given ham band with specified offset
-        Assumes channel is configured and set to use PLL A
+        Assumes output is configured beforehand
         
         Args:
+            channel: output channel to use (0, 1, 2)
             band: string denoting which ham band to transmit in
             offset: frequency offset from start of band (in Hz)
+            pll [optional]: the pll used for the output source
+            correction [optional]: frequency correction factor to account for drift
         '''  
+
+        #200 Hz WSPR allocation on all bands
+        assert 0 <= offset <= 200
         
-        if band == "20m":
-            assert 0 <= offset <= 200
+        if band == "20m": #base freq = 14.097.000 MHz
             pll_a = 28
-            pll_b_base = 195370
+            pll_b_base = 200052
+            pll_c = 1023890
+            output_divider = 50
+        elif band == "40m": #base freq = 7.040.000 MHz
+            pll_a = 28
+            pll_b_base = 82619
+            pll_c = 511945
+            output_divider = 100
             
-        #set output divider to 50 since we control with VCO
-        self.configure_output_multisynth(channel, 50, 0, 1)    
-        self.configure_pll(0, pll_a, pll_b_base + int(2 * offset), 1000000)
+        #set output divider
+        self.configure_output_multisynth(channel, output_divider, 0, 1)
+        #magic numbers for 1.465 Hz tone spacing
+        self.configure_pll(pll, pll_a, pll_b_base + int((offset + correction) * 2.04778157), pll_c)
