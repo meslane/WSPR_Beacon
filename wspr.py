@@ -5,27 +5,12 @@ import time
 import i2c_device
 import uart_device
 
-def lfsr_taps(val: int, taps: int, bit_len: int = 32):
-    bit = 0
-    temp = val
-    for i in range(bit_len):
-        bit = bit ^ (temp & 0x01)
-        temp >>= 1
-        '''
-        #xor output with bit at tap if tap exists
-        if (taps >> i) & 0x01 == 0x01:
-            bit ^= (val >> i)
-        '''
-        
-    return bit & 0x01
-
 def parity(val: int, bit_len: int = 32):
     '''
     Calculate the parity of a given integer
     return 1 if the number of bits is odd
     return 0 if the number of bits is even
     '''
-    
     bit_sum = 0
     for i in range(bit_len):
         bit_sum += (val >> i) & 0x01
@@ -44,6 +29,10 @@ def bit_reverse(val: int, bit_len: int = 8):
     return val_rev
 
 def wspr_int(char):
+    '''
+    Convert a char to an int the way WSPR wants it
+    '''
+    
     c = ord(char)
     
     if 48 <= c <= 57:
@@ -97,12 +86,6 @@ def generate_wspr_message(callsign: str, grid: str, power: int):
     for i in range(7):
         c_array[i] = (comb_int >> 8 * (6 - i)) & 0xFF
     
-    '''
-    for byte in c_array: #verified this is correct
-        print(hex(byte), end=' ')
-    print()
-    '''
-    
     #apply FEC encoding
     R_0 = 0 #shift registers
     R_1 = 0
@@ -153,34 +136,68 @@ def generate_wspr_message(callsign: str, grid: str, power: int):
         
     return output
 
-i2c = machine.I2C(1, scl=machine.Pin(27), sda=machine.Pin(26),
-                  freq=100000, timeout=500000)
-clockgen = i2c_device.SI5351(i2c)
 
-uart0 = machine.UART(0, baudrate=9600, tx=machine.Pin(16), rx=machine.Pin(17), timeout=100)
-gps = uart_device.TEL0132(uart0)
-
-#clockgen programming
-#20m WSPR from 14.0970 - 14.0972 MHz (200 Hz bandwidth)
-#4x tones with 1.465 Hz Spacing
-#for output purity, should adjust VCO divider before adjusting output divider
-#disable clocks
-clockgen.enable_output(0, False)
-clockgen.enable_output(1, False)
-clockgen.enable_output(2, False)
-
-clockgen.configure_output_driver(1)
-clockgen.enable_output(1, True)
-
-#28 + (195364 / 1000000) = 14.097.000 MHz
-#375/256 tone spacing = 1.465 Hz
-#1.465 Hz / 3 = 0.4883333...
-#therefore offset 256 * 3 = 768 should equal base + 375
-clockgen.transmit_wspr_tone(1, "20m", 0, correction=0)
-clockgen.reset_plls()
-
-print("=======")
-#generate_wspr_message("W6NXP", "AA00", 13)
-print()
-print(generate_wspr_message("W6NXP", "DM03", 13))
-print('\n')
+class Beacon:
+    def __init__(self, i2c: machine.I2C, uart: machine.UART):
+        #constants
+        self.tone_period = 683 #ms
+        self.tone_spacing = 1.465 #Hz
+        self.message_length = 162 #tones
+        
+        self.clockgen = i2c_device.SI5351(i2c)
+        self.gps = uart_device.TEL0132(uart)
+        self.timer = machine.Timer(period=self.tone_period, mode = machine.Timer.PERIODIC,
+                   callback=None)
+        
+        self.tone_index = 0
+        self.message = []
+        
+        self.band = None
+        self.offset = None
+        self.output = None
+        
+    def generate_message(self, callsign: str, grid: str, power: str):
+        self.message = generate_wspr_message(callsign, grid, power)
+    
+    def configure_clockgen(self, band: str, offset: int, output: int = 1):
+        '''
+        Set transmit freq and get frontend ready
+        '''
+        self.band = band
+        self.offset = offset
+        self.output = output
+        
+        self.clockgen.configure_output_driver(self.output)
+        self.clockgen.enable_output(self.output, False)
+        
+    def transmit_next_tone(self, *args):
+        '''    
+        Transmit the next tone in the message buffer
+        This should be called from a clock interrupt, not directly
+        '''
+        #make sure we got one in the chamber
+        assert len(self.message) == self.message_length
+        assert self.band != None
+        assert self.offset != None
+        assert self.output != None
+        
+        if self.tone_index >= 162:
+            self.clockgen.enable_output(self.output, False)
+            self.timer.deinit() #message is finished, stop timer
+        else:
+            if self.tone_index == 0:
+                self.clockgen.enable_output(self.output, True)
+            
+            tone_offset = self.offset + (self.message[self.tone_index] * self.tone_spacing)
+            self.tone_index += 1
+            
+            self.clockgen.transmit_wspr_tone(self.output, self.band,
+                                             tone_offset, correction=0)
+        
+    def transmit_message(self):
+        '''
+        start timer and begin transmitting
+        '''
+        self.timer.init(period = self.tone_period,
+                        mode = machine.Timer.PERIODIC,
+                        callback = self.transmit_next_tone)

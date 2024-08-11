@@ -204,7 +204,7 @@ class SI5351(I2C_Device):
         '''  
 
         #200 Hz WSPR allocation on all bands
-        assert 0 <= offset <= 200
+        assert 0 <= offset #<= 200
         
         if band == "20m": #base freq = 14.097.000 MHz
             pll_a = 28
