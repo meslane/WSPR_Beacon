@@ -31,7 +31,11 @@ class TEL0132(UART_Device):
             #exit once we get the right string
             if uart_str[0:6] == '$GNGGA':
                 break
-
+        
+        #if no fix, return N/A
+        if uart_str[6:8] == ',,':
+            return ('N/A', (0,0))        
+        
         gps_time = uart_str[7:9] + ':' + uart_str[9:11] + ':' + uart_str[11:13]
         gps_lat = int(uart_str[18:20]) + (float(uart_str[20:28]) / 60)
         gps_lon = int(uart_str[31:34]) + (float(uart_str[34:42]) / 60)

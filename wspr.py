@@ -138,7 +138,7 @@ def generate_wspr_message(callsign: str, grid: str, power: int):
 
 
 class Beacon:
-    def __init__(self, i2c: machine.I2C, uart: machine.UART):
+    def __init__(self, i2c: machine.I2C, uart: machine.UART, pps: machine.Pin):
         #constants
         self.tone_period = 683 #ms
         self.tone_spacing = 1.465 #Hz
@@ -148,6 +148,16 @@ class Beacon:
         self.gps = uart_device.TEL0132(uart)
         self.timer = machine.Timer(period=self.tone_period, mode = machine.Timer.PERIODIC,
                    callback=None)
+        self.timer.deinit()
+        
+        #GPS PPS output
+        self.pps = pps
+        self.pps_count = 0
+        self.last_pps = 0
+        pps.irq(trigger=machine.Pin.IRQ_RISING, handler=self.pps_interrupt)
+        
+        self.led = machine.Pin(25, machine.Pin.OUT)
+        self.led.off()
         
         self.tone_index = 0
         self.message = []
@@ -156,6 +166,8 @@ class Beacon:
         self.offset = None
         self.output = None
         
+        self.state = "init"
+    
     def generate_message(self, callsign: str, grid: str, power: str):
         self.message = generate_wspr_message(callsign, grid, power)
     
@@ -184,6 +196,7 @@ class Beacon:
         if self.tone_index >= 162:
             self.clockgen.enable_output(self.output, False)
             self.timer.deinit() #message is finished, stop timer
+            self.tone_index = 163
         else:
             if self.tone_index == 0:
                 self.clockgen.enable_output(self.output, True)
@@ -201,3 +214,45 @@ class Beacon:
         self.timer.init(period = self.tone_period,
                         mode = machine.Timer.PERIODIC,
                         callback = self.transmit_next_tone)
+    
+    def pps_interrupt(self, *args):
+        self.led.toggle()
+        self.pps_count += 1
+    
+    def run(self):
+        start_state = self.state
+        
+        #state machine
+        if self.state == "init":
+            self.state = "no_fix"
+            
+        elif self.state == "no_fix":
+            if self.pps_count != self.last_pps:
+                self.state = "wait_for_transmit"
+                
+        elif self.state == "wait_for_transmit":
+            gps_time = self.gps.get_time_and_position()[0]
+            
+            if gps_time == "N/A":
+                self.state = "no_fix"
+            else: #if have a fix
+                #trigger on rising PPS pulse to transmit at the start of the minute
+                if int(gps_time[4]) % 2 == 1 and int(gps_time[6:8]) == 59:
+                    self.state = "await_pps"
+                    
+        elif self.state == "await_pps":
+            if self.pps_count != self.last_pps:
+                self.transmit_message() #begin transmission
+                self.state = "transmit"
+
+        elif self.state == "transmit":
+            if self.tone_index == 163:
+                self.tone_index = 0
+                self.state = "wait_for_transmit"
+                
+        self.last_pps = self.pps_count
+        
+        if self.state != start_state:
+            print("{} - {}".format(self.state, self.pps_count))
+        
+        time.sleep(0.01)
