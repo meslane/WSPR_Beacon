@@ -1,6 +1,7 @@
 import machine
 import sys
 import time
+import random
 
 import i2c_device
 import uart_device
@@ -163,7 +164,8 @@ class Beacon:
         self.message = []
         
         self.band = None
-        self.offset = None
+        self.offsets = None
+        self.offset_index = 0
         self.output = None
         
         self.state = "init"
@@ -171,12 +173,12 @@ class Beacon:
     def generate_message(self, callsign: str, grid: str, power: str):
         self.message = generate_wspr_message(callsign, grid, power)
     
-    def configure_clockgen(self, band: str, offset: int, output: int = 1):
+    def configure_clockgen(self, band: str, offsets: tuple[int], output: int = 1):
         '''
         Set transmit freq and get frontend ready
         '''
         self.band = band
-        self.offset = offset
+        self.offsets = offsets
         self.output = output
         
         self.clockgen.configure_output_driver(self.output)
@@ -190,7 +192,7 @@ class Beacon:
         #make sure we got one in the chamber
         assert len(self.message) == self.message_length
         assert self.band != None
-        assert self.offset != None
+        assert self.offsets != None
         assert self.output != None
         
         if self.tone_index >= 162:
@@ -201,9 +203,12 @@ class Beacon:
             if self.tone_index == 0:
                 self.clockgen.enable_output(self.output, True)
             
-            tone_offset = self.offset + (self.message[self.tone_index] * self.tone_spacing)
-            self.tone_index += 1
+            if isinstance(self.offsets, int):
+                tone_offset = self.offsets + (self.message[self.tone_index] * self.tone_spacing)
+            else:
+                tone_offset = self.offsets[self.offset_index] + (self.message[self.tone_index] * self.tone_spacing)
             
+            self.tone_index += 1
             self.clockgen.transmit_wspr_tone(self.output, self.band,
                                              tone_offset, correction=0)
         
@@ -238,6 +243,14 @@ class Beacon:
             else: #if have a fix
                 #trigger on rising PPS pulse to transmit at the start of the minute
                 if int(gps_time[4]) % 2 == 1 and int(gps_time[6:8]) == 59:
+                    #pick next offset
+                    if isinstance(self.offsets, int):
+                        self.offset_index = 0
+                        print("Offset = {}".format(self.offsets))
+                    else:
+                        self.offset_index = random.randint(0, len(self.offsets)) #pick new random offset from list
+                        print("Offset = {}".format(self.offsets[self.offset_index]))
+                    
                     self.state = "await_pps"
                     
         elif self.state == "await_pps":

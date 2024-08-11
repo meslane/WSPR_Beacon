@@ -14,7 +14,7 @@ pps_in = machine.Pin(18, machine.Pin.IN)
 beacon = wspr.Beacon(i2c, uart0, pps_in)
 
 beacon.generate_message("W6NXP", "DM03", 13)
-beacon.configure_clockgen("20m", 100)
+beacon.configure_clockgen("20m", (80,85,90,95,100,105,110,115,120))
 
 while True:
     beacon.run()
